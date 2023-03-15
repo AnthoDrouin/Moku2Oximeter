@@ -30,7 +30,8 @@ class Oximeter:
 	def __init__(
 			self,
 			datalogger: "Datalogger",
-			patient: dict,
+			patient: Optional[dict] = None,
+			streaming_period: float = 10,
 			**kwargs
 	):
 		self.datalogger = datalogger
@@ -47,11 +48,48 @@ class Oximeter:
 
 
 	def _set_default_kwargs(self):
+		self.kwargs.setdefault("acquisition_mode", "Precision")
+		self.kwargs.setdefault("sample_rate", 4030)
+		self.kwargs.setdefault("sleep_time", 0)
+
+	def _set_param_streaming(self):
+		self.datalogger.set_acquisition_mode(mode=self.kwargs["acquisition_mode"])
+		self.datalogger.set_samplerate(self.kwargs["sample_rate"])
+
+	def on_acquisition_begin(self):
+		self._set_param_streaming()
+
+		self.datalogger.generate_waveform(type="DC", channel=1, dc_level=5)
+		self.datalogger.generate_waveform(type="DC", channel=2, dc_level=0)
+
+		finger_detected = False
+		while not finger_detected:
+			finger_detected = self.datalogger.get_stream_data()["ch1"][-1] < 4.8
+			print("No finger detected, please put your finger on the sensor", end="\r")
+
+		# TODO : COMPLETE ACQUISITION
+
+	def acquisition(self):
+		self.on_acquisition_begin()
+
+
+
+		time.sleep(self.kwargs["sleep_time"])
+		self.datalogger.start_streaming(duration=self.streaming_period)
+
+
+	def on_acquisition_end(self):
 		pass
 
 
 	@staticmethod
 	def extract_data(path, to_dict: bool = False) -> Union[dict, Tuple[np.ndarray, np.ndarray]]:
+		"""
+		Extract the data from the file
+		:param path: path to the data
+		:param to_dict: if True, return a dict with the time and the tension data
+		:return: time and tension data
+		"""
 		tension = []
 		time = []
 		try:
@@ -190,6 +228,11 @@ class Oximeter:
 		if show:
 			plt.show()
 
+
+	class Holter(Oximeter):
+
+		def __init__(self):
+			pass
 
 if __name__ == '__main__':
 	data_dict = Oximeter.extract_data("data_antoine.npy", to_dict=True)
