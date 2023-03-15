@@ -9,23 +9,23 @@ from typing import *
 
 class Oximeter:
 	normal_hearth_rate_by_age = {
-		"10": (70, 190),
-		"20": (95, 162),
-		"30": (93, 157),
-		"40": (90, 153),
-		"45": (88, 149),
-		"50": (85, 145),
-		"55": (83, 140),
-		"60": (80, 136),
-		"65": (78, 132),
-		"70": (75, 128),
+		10: (70, 190),
+		20: (95, 162),
+		30: (93, 157),
+		40: (90, 153),
+		45: (88, 149),
+		50: (85, 145),
+		55: (83, 140),
+		60: (80, 136),
+		65: (78, 132),
+		70: (75, 128),
 	}
 	normal_sp02_by_pourcentage = {
-		"95": "normal",
-		"91": "Concerning blood Oxygen Levels",
-		"85": "Concerning blood Oxygen Levels : LOW BLOOD OXYGEN LEVELS",
-		"80": "LOW OXYGEN LEVELS : Brain is affected",
-		"67": "DANGER : Cyanosis"
+		67: "DANGER : Cyanosis",
+		80: "LOW OXYGEN LEVELS : Brain is affected",
+		91: "Concerning blood Oxygen Levels : LOW BLOOD OXYGEN LEVELS",
+		95: "Concerning blood Oxygen Levels",
+		100: "normal",
 	}
 
 	def __init__(
@@ -33,18 +33,22 @@ class Oximeter:
 			datalogger: Datalogger,
 			patient: Optional[dict] = None,
 			streaming_period: float = 10,
+			filename: Optional[str] = None,
+			show_data: bool = True,
 			**kwargs
 	):
 		self.datalogger = datalogger
 		self.patient = patient
 		self.kwargs = kwargs
 		self._set_default_kwargs()
+		self.filename = filename
+		self.show_data = show_data
 		self.data = {
 			"infrared" : {"ch1": [0], "time": [0]},
 			"red" : None,
 			"BPM" : None,
 			"SpO2" : None,
-			"health" : None,
+			"health" : [],
 		}
 
 
@@ -54,6 +58,11 @@ class Oximeter:
 		self.kwargs.setdefault("sleep_time", 0)
 		self.kwargs.setdefault("filename", None)
 		self.kwargs.setdefault("plot_data", True)
+		self.kwargs.setdefault("remove_first_data", 0)
+		self.kwargs.setdefault("moving_average_window", 300)
+		self.kwargs.setdefault("param_savgol", (200, 500))
+		self.kwargs.setdefault("batch_size", 1000)
+
 
 	def _set_param_streaming(self):
 		self.datalogger.set_acquisition_mode(mode=self.kwargs["acquisition_mode"])
@@ -111,17 +120,71 @@ class Oximeter:
 		self.on_acquisition_end()
 
 
-
-
 	def on_acquisition_end(self):
-		self.data["infrared"]["ch1"] = self.data["infrared"]["ch1"][1:]
-		self.data["infrared"]["time"] = self.data["infrared"]["time"][1:]
-		self.data["red"]["ch1"] = self.data["red"]["ch1"][1:]
-		self.data["red"]["time"] = self.data["red"]["time"][1:]
+		self.data["infrared"]["ch1"] = np.array(self.data["infrared"]["ch1"][1:])
+		self.data["infrared"]["time"] = np.array(self.data["infrared"]["time"][1:])
+		self.data["red"]["ch1"] = np.array(self.data["red"]["ch1"][1:])
+		self.data["red"]["time"] = np.array(self.data["red"]["time"][1:])
 
 		self.data["infrared"]["ch1"] = Oximeter.apply_savgol_filter(self.data["infrared"]["ch1"], 51, 3)
 		self.data["red"]["ch1"] = Oximeter.apply_savgol_filter(self.data["red"]["ch1"], 51, 3)
 
+		bpm_red = Oximeter.compute_bpm(
+			self.data["red"],
+			remove_first_data=kwargs.get("remove_first_data", 0),
+			param_savgol=kwargs.get("param_savgol", (200, 500)),
+			moving_average_window=kwargs.get("moving_average_window", 300),
+		)
+		bpm_infrared = Oximeter.compute_bpm(
+			self.data["infrared"],
+			remove_first_data=kwargs.get("remove_first_data", 0),
+			param_savgol=kwargs.get("param_savgol", (200, 500)),
+			moving_average_window=kwargs.get("moving_average_window", 300),
+		)
+		self.data["BPM"] = (bpm_red + bpm_infrared) / 2
+
+		self.data["sp02"] = Oximeter.compute_sp02(
+			self.data,
+			remove_first_data=kwargs.get("remove_first_data", 0),
+			param_savgol=kwargs.get("param_savgol", (200, 500)),
+			moving_average_window=kwargs.get("moving_average_window", 300),
+			batch_size=kwargs.get("batch_size", 1000),
+		)
+
+		self.check_health()
+
+		if self.filename is not None:
+			np.save("dataOximeter/" + filename + ".npy", self.data)
+
+		if self.show_data():
+			Oximeter.plot_data(
+				time=self.data["red"]["time"],
+				tension=self.data["red"]["ch1"],
+				type_graph="final",
+			)
+
+	def check_health(self) -> None:
+		assert isinstance(self.patient, dict), "the patient informations must be a dict"
+		assert self.patient.get("age") is not None, "The age of the patient must be provided to determine it's health"
+
+		for age in normal_hearth_rate_by_age.keys():
+			if self.patient["age"] < age:
+				if self.data["BPM"] < normal_hearth_rate_by_age[age][0]:
+					self.data["health"].append(f"bpm under the average {normal_hearth_rate_by_age[age][0]} - {normal_hearth_rate_by_age[age][1]}")
+				elif self.data["BPM"] > normal_hearth_rate_by_age[age][1]:
+					self.data["health"].append(f"bpm above the average {normal_hearth_rate_by_age[age][0]} - {normal_hearth_rate_by_age[age][1]}")
+				else:
+					self.data["health"].append(f"Your BPM is as expected for you age. Your BPM is in the following range {normal_hearth_rate_by_age[age][0]} - {normal_hearth_rate_by_age[age][1]}")
+				break
+			else:
+				continue
+		if normal_hearth_rate_by_age[normal_hearth_rate_by_age.keys()[-1]] < self.patient["age"]:
+			self.data["health"].append(f"No data is available for your age. Sorry :(")
+
+		for normal_concentration in normal_sp02_by_pourcentage.keys():
+			if self.data["SpO2"] < normal_concentration:
+				self.data["health"].append(f"{normal_sp02_by_pourcentage[normal_concentration]}")
+				break
 
 
 	@staticmethod
@@ -154,16 +217,44 @@ class Oximeter:
 			return {"time": np.array(time), "ch1": np.array(tension)}
 
 
-	def compute_sp02(
+	def compute_spO2(
 			self,
 			data: Optional[dict] = None,
 			path: Optional[str] = None,
 			remove_first_data: Optional[int] = None,
 			param_savgol: Tuple[int] = (200, 500),
 			moving_average_window: int = 300,
+			batch_size: int = 1000,
 	):
-		time, tension = Oximeter.prepare_data(data, path)
-		pass
+		time_red, tension_red = Oximeter.prepare_data(data["red"], path)
+		time_ir, tension_ir = Oximeter.prepare_data(data["infrared"], path)
+		if remove_first_data is not None:
+			time_red, tension_red = time_red[remove_first_data:], tension_red[remove_first_data:]
+			time_ir, tension_ir = time_ir[remove_first_data:], tension_ir[remove_first_data:]
+
+		time_red_f1, tension_red_f1 = time_red, Oximeter.apply_savgol_filter(tension_red, param_savgol[0])
+		time_ir_f1, tension_ir_f1 = time_ir, Oximeter.apply_savgol_filter(tension_ir, param_savgol[0])
+
+		assert len(time_red_f1) == len(tension_red_f1) == len(time_ir_f1) == len(tension_ir_f1), "Data length mismatch"
+
+		# seperate data in batch_size
+		batches_red = [tension_red_f1[i:i + batch_size] for i in range(0, len_data, batch_size)]
+		batches_ir = [tension_ir_f1[i:i + batch_size] for i in range(0, len_data, batch_size)]
+
+		spo2_predicted = []
+
+		for idx, batch in enumerate(zip(batches_red, batches_ir)):
+			batch_red, batch_ir = batch
+			ac_red_div_dc_red = (np.max(batch_red) - np.min(batch_red))/np.min(batch_red)
+			ac_ir_div_dc_ir = (np.max(batch_ir) - np.min(batch_ir))/np.min(batch_ir)
+			#spo2_predicted.append(110 - 25 * ac_red_div_dc_red/ac_ir_div_dc_ir)
+			spo2_predicted.append(ac_red_div_dc_red/ac_ir_div_dc_ir)
+
+		return np.mean(spo2_predicted), np.std(spo2_predicted)
+
+	@staticmethod
+	def _return_max_min(element):
+		return np.max(element), np.min(element)
 
 	@staticmethod
 	def compute_bpm(
@@ -184,11 +275,11 @@ class Oximeter:
 			time = time[remove_first_data:]
 			tension = tension[remove_first_data:]
 
-		time_f1, tension_f1 = Oximeter.apply_savgol_filter(time, param_savgol[0]), Oximeter.apply_savgol_filter(tension, param_savgol[0])
+		time_f1, tension_f1 = time, Oximeter.apply_savgol_filter(tension, param_savgol[0])
 
 		tension_diff = Oximeter.differentiate(tension_f1)
 
-		time_f2, tension_diff_f2 = Oximeter.apply_savgol_filter(time_f1, param_savgol[1]), Oximeter.apply_savgol_filter(tension_diff, param_savgol[1])
+		time_f2, tension_diff_f2 = time_f1, Oximeter.apply_savgol_filter(tension_diff, param_savgol[1])
 
 		tension_diff_f2_mean = Oximeter.moving_average(tension_diff_f2, moving_average_window)
 
@@ -276,7 +367,8 @@ class Oximeter:
 		fig = plt.figure(figsize=(16, 5))
 		if type_graph == "final":
 			plt.plot(time, tension, "-")
-			plt.scatter(time[kwargs.get("index_minimum_time")], tension[kwargs.get("index_minimum_time")])
+			if kwargs.get("index_minimum_time") is not None:
+				plt.scatter(time[kwargs.get("index_minimum_time")], tension[kwargs.get("index_minimum_time")])
 			plt.xlabel("Temps [s]", fontsize=22)
 			plt.ylabel("Tension [V]", fontsize=22)
 			plt.title(f"Fréquence cardiaque {kwargs.get('bpm'):.2f}", fontsize=22)
@@ -296,8 +388,8 @@ class Holter(Oximeter):
 		pass
 
 if __name__ == '__main__':
-	#data_dict = Oximeter.extract_data("data_antoine.npy", to_dict=True)
-	data_dict = Oximeter.extract_data("data_antho_real_good.npy", to_dict=True)
+	data_dict = Oximeter.extract_data("data_antoine.npy", to_dict=True)
+	#data_dict = Oximeter.extract_data("data_antho_real_good.npy", to_dict=True)
 	bpm, extra = Oximeter.compute_bpm(data=data_dict, remove_first_data=100)
 	Oximeter.plot_data(
 		extra["time"],
