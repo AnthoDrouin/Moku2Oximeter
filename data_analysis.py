@@ -176,7 +176,7 @@ class Oximeter:
 		return np.diff(data_to_differentiate)
 
 	@staticmethod
-	def moving_average(data_to_average: np.ndarray, window:int = 300):
+	def moving_average(data_to_average: np.ndarray, window:int = 300) -> np.ndarray:
 		return np.convolve(data_to_average, np.ones(window), 'valid') / window
 
 	@staticmethod
