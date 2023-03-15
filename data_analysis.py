@@ -7,6 +7,25 @@ from typing import *
 
 
 class Oximeter:
+	normal_hearth_rate_by_age = {
+		"10": (70, 190),
+		"20": (95, 162),
+		"30": (93, 157),
+		"40": (90, 153),
+		"45": (88, 149),
+		"50": (85, 145),
+		"55": (83, 140),
+		"60": (80, 136),
+		"65": (78, 132),
+		"70": (75, 128),
+	}
+	normal_sp02_by_pourcentage = {
+		"95": "normal",
+		"91": "Concerning blood Oxygen Levels",
+		"85": "Concerning blood Oxygen Levels : LOW BLOOD OXYGEN LEVELS",
+		"80": "LOW OXYGEN LEVELS : Brain is affected",
+		"67": "DANGER : Cyanosis"
+	}
 
 	def __init__(
 			self,
@@ -17,6 +36,7 @@ class Oximeter:
 		self.datalogger = datalogger
 		self.patient = patient
 		self.kwargs = kwargs
+		self._set_default_kwargs()
 		self.data = {
 			"infrared" : None,
 			"red" : None,
@@ -25,8 +45,13 @@ class Oximeter:
 			"health" : None,
 		}
 
+
+	def _set_default_kwargs(self):
+		pass
+
+
 	@staticmethod
-	def extract_data(path):
+	def extract_data(path, to_dict: bool = False) -> Union[dict, Tuple[np.ndarray, np.ndarray]]:
 		tension = []
 		time = []
 		try:
@@ -43,7 +68,10 @@ class Oximeter:
 
 			for v in data["ch1"]:
 				tension.append(v)
-		return (time, tension)
+		if not to_dict:
+			return np.array(time), np.array(tension)
+		else:
+			return {"time": np.array(time), "ch1": np.array(tension)}
 
 	@staticmethod
 	def compute_bpm(
@@ -77,9 +105,16 @@ class Oximeter:
 
 		tension_diff_f2_mean = Oximeter.moving_average(tension_diff_f2, moving_average_window)
 
-		bpm = Oximeter.compute_bpm_from_signal(time_f2, tension_diff_f2_mean, moving_average_window)
+		bpm, idx_min = Oximeter._compute_bpm_from_signal(time_f2, tension_diff_f2_mean, moving_average_window)
 
-		return bpm
+		extra_params = {
+			"index_minimum_time": idx_min[0],
+			"index_minimum": idx_min[1],
+			"time": time,
+			"tension_f1": tension_f1
+		}
+
+		return bpm, extra_params
 
 
 	@staticmethod
@@ -107,7 +142,7 @@ class Oximeter:
 		return np.convolve(data_to_average, np.ones(window), 'valid') / window
 
 	@staticmethod
-	def compute_bpm_from_signal(time: np.ndarray, tension: np.ndarray, offset: int) -> float:
+	def _compute_bpm_from_signal(time: np.ndarray, tension: np.ndarray, offset: int) -> float:
 		"""
 		Compute the BPM from a signal that is already filtered
 		:param time: Array of time
@@ -126,8 +161,44 @@ class Oximeter:
 		num_hearthbeat = len(index_minimum_time)
 		dt_heathnbeat = time[index_minimum_time[-1]] - time[index_minimum_time[0]]
 		bpm = num_hearthbeat / dt_heathnbeat * 60
-		return bpm
+		return bpm, (index_minimum_time, index_minimum)
+
+	@staticmethod
+	def plot_data(time: np.ndarray, tension: np.ndarray, type_graph: str = "final", show: bool = True, **kwargs) -> plt.Figure:
+		"""
+		Plot the data
+		:param time:
+		:param tension:
+		:param type_graph: "final", "raw", "detection"
+		:param kwargs:
+		:return:
+		"""
+		plt.style.use("https://raw.githubusercontent.com/dccote/Enseignement/master/SRC/dccote-errorbars.mplstyle")
+		fig = plt.figure(figsize=(16, 5))
+		if type_graph == "final":
+			plt.plot(time, tension, "-")
+			plt.scatter(time[kwargs.get("index_minimum_time")], tension[kwargs.get("index_minimum_time")])
+			plt.xlabel("Temps [s]", fontsize=22)
+			plt.ylabel("Tension [V]", fontsize=22)
+			plt.title(f"Fréquence cardiaque {kwargs.get('bpm'):.2f}", fontsize=22)
+		elif type_graph == "raw":
+			raise NotImplementedError
+		elif type_graph == "detection":
+			raise NotImplementedError
+		else:
+			raise ValueError("type_graph must be 'final', 'raw' or 'detection'")
+		if show:
+			plt.show()
 
 
 if __name__ == '__main__':
-	#bpm = Oximeter.compute_bpm(path="data_antho_real_good.npy", remove_first_data=100)
+	data_dict = Oximeter.extract_data("data_antoine.npy", to_dict=True)
+	bpm, extra = Oximeter.compute_bpm(data=data_dict, remove_first_data=100)
+	Oximeter.plot_data(
+		extra["time"],
+		extra["tension_f1"],
+		type_graph="final",
+		index_minimum_time=extra["index_minimum_time"],
+		index_minimum=extra["index_minimum"],
+		bpm=bpm
+	)
