@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import scipy
 from moku.instruments import Datalogger
+from sigfig import round
 from typing import *
 
 
@@ -29,7 +30,7 @@ class Oximeter:
 
 	def __init__(
 			self,
-			datalogger: "Datalogger",
+			datalogger: Datalogger,
 			patient: Optional[dict] = None,
 			streaming_period: float = 10,
 			**kwargs
@@ -39,7 +40,7 @@ class Oximeter:
 		self.kwargs = kwargs
 		self._set_default_kwargs()
 		self.data = {
-			"infrared" : None,
+			"infrared" : {"ch1": [0], "time": [0]},
 			"red" : None,
 			"BPM" : None,
 			"SpO2" : None,
@@ -51,6 +52,8 @@ class Oximeter:
 		self.kwargs.setdefault("acquisition_mode", "Precision")
 		self.kwargs.setdefault("sample_rate", 4030)
 		self.kwargs.setdefault("sleep_time", 0)
+		self.kwargs.setdefault("filename", None)
+		self.kwargs.setdefault("plot_data", True)
 
 	def _set_param_streaming(self):
 		self.datalogger.set_acquisition_mode(mode=self.kwargs["acquisition_mode"])
@@ -62,24 +65,63 @@ class Oximeter:
 		self.datalogger.generate_waveform(type="DC", channel=1, dc_level=5)
 		self.datalogger.generate_waveform(type="DC", channel=2, dc_level=0)
 
+		# TODO: CONFIRME THAT NO START_STREAMING IS NEEDED
+		#self.datalogger.start_streaming()
 		finger_detected = False
 		while not finger_detected:
 			finger_detected = self.datalogger.get_stream_data()["ch1"][-1] < 4.8
 			print("No finger detected, please put your finger on the sensor", end="\r")
 
-		# TODO : COMPLETE ACQUISITION
+		#self.datalogger.stop_streaming()
+
 
 	def acquisition(self):
 		self.on_acquisition_begin()
-
-
-
+		print(f"Finger detected, starting sleep time of {self.kwargs['sleep_time']}s")
 		time.sleep(self.kwargs["sleep_time"])
+
 		self.datalogger.start_streaming(duration=self.streaming_period)
+		print(f"Streaming started for red light {self.streaming_period}s")
+
+		while self.data["red"]["time"][-1] < self.streaming_period:
+			new_data = self.datalogger.get_stream_data()
+			self.data["red"]["ch1"] += new_data["ch1"]
+			self.data["red"]["time"] += new_data["time"]
+			print(f"Remaining time {round(duration - data['time'][-1], 3)} seconds", end="\r")
+
+		self.datalogger.stop_streaming()
+		time.sleep(1)
+		self.datalogger.start_streaming(duration=self.streaming_period)
+
+		self.datalogger.generate_waveform(type="DC", channel=1, dc_level=0)
+		self.datalogger.generate_waveform(type="DC", channel=2, dc_level=5)
+
+		self.datalogger.start_streaming(duration=self.streaming_period)
+		time.sleep(self.kwargs["sleep_time"])
+
+		print(f"Streaming started for infrared light {self.streaming_period}s")
+		while self.data["infrared"]["time"][-1] < self.streaming_period:
+			new_data = self.datalogger.get_stream_data()
+			self.data["infrared"]["ch1"] += new_data["ch1"]
+			self.data["infrared"]["time"] += new_data["time"]
+			print(f"Remaining time {round(duration - data['time'][-1], 3)} seconds", end="\r")
+
+		self.datalogger.stop_streaming()
+
+		self.on_acquisition_end()
+
+
 
 
 	def on_acquisition_end(self):
-		pass
+		self.data["infrared"]["ch1"] = self.data["infrared"]["ch1"][1:]
+		self.data["infrared"]["time"] = self.data["infrared"]["time"][1:]
+		self.data["red"]["ch1"] = self.data["red"]["ch1"][1:]
+		self.data["red"]["time"] = self.data["red"]["time"][1:]
+
+		self.data["infrared"]["ch1"] = Oximeter.apply_savgol_filter(self.data["infrared"]["ch1"], 51, 3)
+		self.data["red"]["ch1"] = Oximeter.apply_savgol_filter(self.data["red"]["ch1"], 51, 3)
+
 
 
 	@staticmethod
@@ -111,6 +153,18 @@ class Oximeter:
 		else:
 			return {"time": np.array(time), "ch1": np.array(tension)}
 
+
+	def compute_sp02(
+			self,
+			data: Optional[dict] = None,
+			path: Optional[str] = None,
+			remove_first_data: Optional[int] = None,
+			param_savgol: Tuple[int] = (200, 500),
+			moving_average_window: int = 300,
+	):
+		time, tension = Oximeter.prepare_data(data, path)
+		pass
+
 	@staticmethod
 	def compute_bpm(
 			data: Optional[dict] = None,
@@ -118,19 +172,14 @@ class Oximeter:
 			remove_first_data: Optional[int] = None,
 			param_savgol: Tuple[int] = (200, 500),
 			moving_average_window: int = 300,
-	) -> Tuple[np.ndarray, np.ndarray]:
+	) -> Tuple[np.ndarray, dict]:
 		"""
 		Compute the BPM from the data
 		:param path: path to the data
 		:return: time and tension data
 		"""
-		if path is None and data is None:
-			raise ValueError("You must specify a path or give a dataset")
-		if path is not None:
-			time, tension = Oximeter.extract_data(path)
-		else:
-			assert data.get("time") is not None and data.get("ch1") is not None, "The data must have a 'time' and a 'ch1' key"
-			time, tension = data["time"], data["ch1"]
+		time, tension = Oximeter.prepare_data(data, path)
+
 		if remove_first_data is not None:
 			time = time[remove_first_data:]
 			tension = tension[remove_first_data:]
@@ -153,6 +202,18 @@ class Oximeter:
 		}
 
 		return bpm, extra_params
+
+	@staticmethod
+	def prepare_data(data: Optional[dict], path: Optional[str] = None) -> Tuple[np.ndarray, np.ndarray]:
+		if path is None and data is None:
+			raise ValueError("You must specify a path or give a dataset")
+		if path is not None:
+			time, tension = Oximeter.extract_data(path)
+		else:
+			assert data.get("time") is not None and data.get("ch1") is not None, "The data must have a 'time' and a 'ch1' key"
+			time, tension = data["time"], data["ch1"]
+
+		return time, tension
 
 
 	@staticmethod
@@ -229,13 +290,14 @@ class Oximeter:
 			plt.show()
 
 
-	class Holter(Oximeter):
+class Holter(Oximeter):
 
-		def __init__(self):
-			pass
+	def __init__(self):
+		pass
 
 if __name__ == '__main__':
-	data_dict = Oximeter.extract_data("data_antoine.npy", to_dict=True)
+	#data_dict = Oximeter.extract_data("data_antoine.npy", to_dict=True)
+	data_dict = Oximeter.extract_data("data_antho_real_good.npy", to_dict=True)
 	bpm, extra = Oximeter.compute_bpm(data=data_dict, remove_first_data=100)
 	Oximeter.plot_data(
 		extra["time"],
