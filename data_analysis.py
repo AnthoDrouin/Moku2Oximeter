@@ -176,6 +176,9 @@ class Oximeter:
 
 
 	def check_health(self) -> None:
+		"""
+		Check the health of the patient
+		"""
 		assert isinstance(self.patient, dict), "the patient informations must be a dict"
 		assert self.patient.get("age") is not None, "The age of the patient must be provided to determine it's health"
 

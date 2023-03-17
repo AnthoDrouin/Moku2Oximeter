@@ -6,13 +6,12 @@ import numpy as np
 from tqdm import tqdm
 
 # datalogger = Datalogger("10.248.117.55", force_connect=True)
-patient = {
-	"name": "Émile J Knystautas",
-	"age": 21,
-}
+# patient = {
+# 	"name": "Émile J Knystautas",
+# 	"age": 21,
+# }
 # Oximeter(
 # 	ip = "10.248.117.55",
-# 	datalogger=None,
 # 	patient=patient,
 # 	streaming_period=9,
 # 	filename="data_2023_03_16",
